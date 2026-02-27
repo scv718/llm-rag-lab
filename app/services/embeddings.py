@@ -1,37 +1,45 @@
 # app/services/embeddings.py
 from __future__ import annotations
+from typing import List, Sequence, Optional
 
-from typing import List
-from google import genai
-from google.genai import types
+EMBED_MODEL = "gemini-embedding-001"  # ✅ text-embedding-004 대신
 
+def _batched(seq: Sequence[str], batch_size: int):
+    for i in range(0, len(seq), batch_size):
+        yield seq[i:i + batch_size]
 
-EMBED_MODEL = "gemini-embedding-001"  # 공식 문서 예시 :contentReference[oaicite:1]{index=1}
+def _to_vec(e) -> List[float]:
+    # google-genai 응답 형태 버전차 대응
+    if hasattr(e, "values"):
+        return list(e.values)
+    if hasattr(e, "embedding") and hasattr(e.embedding, "values"):
+        return list(e.embedding.values)
+    raise RuntimeError("Unknown embedding response shape")
 
-
-def embed_documents(client: genai.Client, texts: List[str], title: str) -> List[List[float]]:
+def embed_documents(client, texts: List[str], title: Optional[str] = None, batch_size: int = 100) -> List[List[float]]:
     """
-    문서(코퍼스)용 임베딩: RETRIEVAL_DOCUMENT
-    - title을 주면 검색 품질에 도움이 된다는 가이드가 있음 :contentReference[oaicite:2]{index=2}
+    - v1beta embedContent는 1 batch 당 최대 100개 제한
+    - 모델은 gemini-embedding-001 사용
     """
+    if not texts:
+        return []
+
+    batch_size = max(1, min(int(batch_size), 100))
+    vectors: List[List[float]] = []
+
+    for batch in _batched(texts, batch_size):
+        resp = client.models.embed_content(
+            model=EMBED_MODEL,
+            contents=batch,
+            # 필요하면 config로 output_dimensionality 지정 가능(아래 참고)
+        )
+        vectors.extend(_to_vec(e) for e in resp.embeddings)
+
+    return vectors
+
+def embed_query(client, text: str) -> List[float]:
     resp = client.models.embed_content(
         model=EMBED_MODEL,
-        contents=texts,
-        config=types.EmbedContentConfig(
-            task_type="RETRIEVAL_DOCUMENT",
-            title=title,
-        ),
+        contents=[text],
     )
-    return [e.values for e in resp.embeddings]
-
-
-def embed_query(client: genai.Client, query: str) -> List[float]:
-    """
-    질의용 임베딩: RETRIEVAL_QUERY :contentReference[oaicite:3]{index=3}
-    """
-    resp = client.models.embed_content(
-        model=EMBED_MODEL,
-        contents=query,
-        config=types.EmbedContentConfig(task_type="RETRIEVAL_QUERY"),
-    )
-    return resp.embeddings[0].values
+    return _to_vec(resp.embeddings[0])
