@@ -11,6 +11,8 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Optional
+from pathlib import Path
+import hashlib
 
 import requests
 import streamlit as st
@@ -21,8 +23,10 @@ import streamlit as st
 # =========================
 APP_TITLE = "RAG Q/A Tool"
 DB_PATH = os.environ.get("LLM_UI_DB", "llm_ui.db")
+DATA_DIR = os.environ.get("LLM_UI_DATA", "app/data")
 
 RAG_API_URL = os.environ.get("RAG_API_URL", "http://127.0.0.1:8000/rag/ask")
+UPLOAD_API_URL = os.environ.get("UPLOAD_API_URL", "http://127.0.0.1:8000/upload")
 DEFAULT_TOP_K = int(os.environ.get("RAG_TOP_K", "5"))
 USE_REAL_API = os.environ.get("USE_REAL_API", "false").lower() == "true"
 
@@ -78,6 +82,35 @@ def db_init() -> None:
         );
         """
     )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS project_docs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            filename TEXT NOT NULL,
+            mime TEXT,
+            size INTEGER NOT NULL,
+            sha256 TEXT,
+            stored_path TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(project_id) REFERENCES projects(id)
+        );
+        """
+    )
+    
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS uploads (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL,
+        kind TEXT NOT NULL,     -- doc|code
+        target_id TEXT NOT NULL, -- doc_id|repo_id
+        filename TEXT NOT NULL,
+        created_at TEXT NOT NULL
+        );
+        """
+    )
+    
     conn.commit()
     conn.close()
 
@@ -173,7 +206,65 @@ def add_turn(thread_id: int, role: str, content: str, payload: Optional[dict[str
     touch_thread(thread_id)
     return rid
 
+def _proj_doc_dir(project_id: int) -> Path:
+    p = Path(DATA_DIR) / "projects" / str(project_id) / "docs"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
 
+def list_project_docs(project_id: int) -> list[sqlite3.Row]:
+    conn = db_conn()
+    rows = conn.execute(
+        "SELECT * FROM project_docs WHERE project_id=? ORDER BY created_at DESC, id DESC",
+        (project_id,),
+    ).fetchall()
+    conn.close()
+    return rows
+
+def upload_to_server(file_blob: dict[str, Any]) -> dict[str, Any]:
+    files = {
+        "file": (file_blob["name"], file_blob["bytes"], file_blob.get("mime") or "application/octet-stream")
+    }
+    r = requests.post(UPLOAD_API_URL, files=files, timeout=300)
+    r.raise_for_status()
+    return r.json()
+
+def save_project_doc(project_id: int, f) -> int:
+    raw = f.getvalue()
+    sha = hashlib.sha256(raw).hexdigest()
+
+    dirp = _proj_doc_dir(project_id)
+    out_path = dirp / f.name
+    if out_path.exists():
+        stem, dot, ext = f.name.partition(".")
+        out_path = dirp / (f"{stem}.{sha[:8]}.{ext}" if dot else f"{stem}.{sha[:8]}")
+
+    out_path.write_bytes(raw)
+
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO project_docs(project_id, filename, mime, size, sha256, stored_path, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (project_id, f.name, getattr(f, "type", None), len(raw), sha, str(out_path), now_ts()),
+    )
+    conn.commit()
+    rid = int(cur.lastrowid)
+    conn.close()
+    return rid
+
+def delete_project_doc(doc_id: int) -> None:
+    conn = db_conn()
+    row = conn.execute("SELECT stored_path FROM project_docs WHERE id=?", (doc_id,)).fetchone()
+    if row and row["stored_path"]:
+        try:
+            Path(row["stored_path"]).unlink(missing_ok=True)
+        except Exception:
+            pass
+    conn.execute("DELETE FROM project_docs WHERE id=?", (doc_id,))
+    conn.commit()
+    conn.close()
 # =========================
 # RAG API
 # =========================
@@ -212,10 +303,7 @@ def call_rag_api(question: str, top_k: int, extra_context: Optional[dict[str, An
         }
         return RagResult.from_any(demo)
 
-    payload = {"question": question, "top_k": top_k}
-    if extra_context:
-        payload["context"] = extra_context
-
+    payload = {"question": question, "top_k": int(top_k)}
     r = requests.post(RAG_API_URL, json=payload, timeout=180)
     r.raise_for_status()
     try:
@@ -356,14 +444,15 @@ with col_left:
         st.markdown('<div class="small-muted">프로젝트가 없습니다.</div>', unsafe_allow_html=True)
     else:
         # 스크롤 박스 높이 고정 (PPT 느낌)
-        with st.container(height=260, border=False):
-            st.markdown('<div class="scroll" style="height:240px;">', unsafe_allow_html=True)
-            for p in projects:
-                sel = (st.session_state["selected_project_id"] == p["id"])
-                label = f"{'✅ ' if sel else ''}{p['name']}"
-                if st.button(label, key=f"proj_{p['id']}", use_container_width=True):
-                    set_project(int(p["id"]))
-            st.markdown("</div>", unsafe_allow_html=True)
+        with st.container(height=260, border=True):
+            if not projects:
+                st.caption("프로젝트가 없습니다.")
+            else:
+                for p in projects:
+                    sel = (st.session_state["selected_project_id"] == p["id"])
+                    label = f"{'✅ ' if sel else ''}{p['name']}"
+                    if st.button(label, key=f"proj_{p['id']}", use_container_width=True):
+                        set_project(int(p["id"]))
 
     st.markdown("<hr style='margin: 10px 0; opacity:0.25;'>", unsafe_allow_html=True)
     st.markdown('<div class="panel-title" style="font-size:0.95rem;">새 프로젝트</div>', unsafe_allow_html=True)
@@ -394,8 +483,36 @@ with col_left:
                 st.warning(f"이미 존재하는 프로젝트명입니다: {name}")
 
     st.markdown("<hr style='margin: 10px 0; opacity:0.25;'>", unsafe_allow_html=True)
-    st.markdown('<div class="panel-title" style="font-size:0.95rem;">옵션</div>', unsafe_allow_html=True)
-    st.session_state["top_k"] = st.number_input("top_k", min_value=1, max_value=20, value=int(st.session_state["top_k"]), step=1)
+    st.markdown('<div class="panel-title" style="font-size:0.95rem;">프로젝트 문서</div>', unsafe_allow_html=True)
+
+    pid = st.session_state.get("selected_project_id")
+    if not pid:
+        st.caption("프로젝트를 선택하면 문서 업로드/목록이 표시됩니다.")
+    else:
+        up_docs = st.file_uploader(
+            "문서 업로드",
+            accept_multiple_files=True,
+            label_visibility="collapsed",
+        )
+        if up_docs:
+            for f in up_docs:
+                save_project_doc(int(pid), f)
+            st.success(f"{len(up_docs)}개 업로드 완료")
+            st.rerun()
+
+        docs = list_project_docs(int(pid))
+        if not docs:
+            st.caption("업로드된 문서가 없습니다.")
+        else:
+            with st.container(height=220, border=True):
+                for d in docs:
+                    c1, c2 = st.columns([4.5, 1.0], gap="small")
+                    with c1:
+                        st.markdown(f"**{d['filename']}**  \n{d['created_at']} · {d['size']} bytes")
+                    with c2:
+                        if st.button("삭제", key=f"doc_del_{d['id']}", use_container_width=True):
+                            delete_project_doc(int(d["id"]))
+                            st.rerun()
 
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -421,21 +538,16 @@ with col_mid:
 
         # 질문 리스트(스크롤 고정) - 새 질문 버튼 없음
         threads = list_threads(int(pid), st.session_state["thread_search"])
-        with st.container(height=320, border=False):
-            st.markdown('<div class="scroll" style="height:300px;">', unsafe_allow_html=True)
+        with st.container(height=320, border=True):
             if not threads:
-                st.markdown('<div class="small-muted">아직 질문이 없습니다. 아래 채팅에서 전송하면 자동으로 추가됩니다.</div>', unsafe_allow_html=True)
+                st.caption("아직 질문이 없습니다. 아래에서 전송하면 자동으로 추가됩니다.")
             else:
                 for t in threads:
                     sel = (st.session_state["selected_thread_id"] == t["id"])
                     prefix = "▶ " if sel else ""
-                    title = t["title"]
-                    ts = t["updated_at"]
-                    tag = t["tag"]
-                    label = f"{prefix}{title}\n\n{ts}  [{tag}]"
+                    label = f"{prefix}{t['title']}\n\n{t['updated_at']}  [{t['tag']}]"
                     if st.button(label, key=f"th_{t['id']}", use_container_width=True):
                         set_thread(int(t["id"]))
-            st.markdown("</div>", unsafe_allow_html=True)
 
         st.markdown("<div class='panel-title' style='margin-top:10px;'>채팅창</div>", unsafe_allow_html=True)
 
@@ -458,71 +570,76 @@ with col_mid:
                             st.markdown(c if len(c) < 1500 else (c[:1500] + "\n\n...(중략)"))
 
         # 입력 바: 업로드 + 입력 + 전송
+      # 입력 바: 업로드(+) + 입력 + 전송  (폼으로 처리: 전송 후 입력 자동 비움)
+    with st.form("chat_form", clear_on_submit=True):
         bar = st.columns([0.65, 3.4, 1.0], gap="small")
-        with bar[0]:
-            up = st.file_uploader(
-                "업로드",
-                accept_multiple_files=True,
-                label_visibility="collapsed",
-            )
-            if up:
-                st.session_state["upload_blobs"] = [{"name": f.name, "bytes": f.getvalue(), "mime": f.type} for f in up]
 
+        with bar[0]:
+            with st.popover("＋", use_container_width=True):
+                up = st.file_uploader(
+                    "파일 업로드",
+                    accept_multiple_files=True,
+                    label_visibility="collapsed",
+                )
+                if up:
+                    st.session_state["upload_blobs"] = [
+                        {"name": f.name, "bytes": f.getvalue(), "mime": f.type} for f in up
+                    ]
+
+        # ✅ 이게 빠져있어서 지금 아무것도 입력이 안 됐던 거임
         with bar[1]:
-            st.session_state["chat_input"] = st.text_input(
-                "메시지",
-                value=st.session_state["chat_input"],
+            msg = st.text_input(
+                "추가 질문",
                 placeholder="추가 질문을 입력...",
                 label_visibility="collapsed",
             )
 
         with bar[2]:
-            send = st.button("전송", use_container_width=True)
+            send = st.form_submit_button("전송", use_container_width=True)
 
-        if st.session_state["upload_blobs"]:
-            st.caption("업로드됨: " + ", ".join([b["name"] for b in st.session_state["upload_blobs"]]))
+    # 업로드 파일 표시
+    if st.session_state["upload_blobs"]:
+        st.caption("업로드됨: " + ", ".join([b["name"] for b in st.session_state["upload_blobs"]]))
 
-        # ✅ 전송할 때마다 질문리스트에 새 항목(새 thread) 추가
-        if send:
-            msg = (st.session_state["chat_input"] or "").strip()
-            if msg:
-                # 1) 새 thread 생성 (제목은 메시지 앞부분)
-                title = msg.replace("\n", " ").strip()
-                if len(title) > 40:
-                    title = title[:40] + "..."
-                new_tid = create_thread(int(pid), title=title, tag="general")
+    # ✅ 전송할 때마다 질문리스트에 새 항목(새 thread) 추가
+    if send:
+        msg = (msg or "").strip()
+        if msg:
+            # 1) 새 thread 생성 (제목은 메시지 앞부분)
+            title = msg.replace("\n", " ").strip()
+            if len(title) > 40:
+                title = title[:40] + "..."
+            new_tid = create_thread(int(pid), title=title, tag="general")
 
-                # 2) user turn 저장
-                add_turn(int(new_tid), "user", msg)
+            # 2) user turn 저장
+            add_turn(int(new_tid), "user", msg)
 
-                # 3) 업로드 메타를 context로 전달(필요시)
-                extra_ctx = None
-                if st.session_state["upload_blobs"]:
-                    extra_ctx = {
-                        "uploads": [{"name": b["name"], "mime": b["mime"], "size": len(b["bytes"])} for b in st.session_state["upload_blobs"]]
-                    }
+            # 3) 업로드 메타를 context로 전달(필요시)
+            extra_ctx = None
+            if st.session_state["upload_blobs"]:
+                last = st.session_state["upload_blobs"][-1]
+                upload_result = upload_to_server(last)
 
-                # 4) LLM 호출 + 저장
-                try:
-                    result = call_rag_api(msg, top_k=int(st.session_state["top_k"]), extra_context=extra_ctx)
-                    add_turn(
-                        int(new_tid),
-                        "assistant",
-                        result.answer_markdown,
-                        payload={
-                            "answer_markdown": result.answer_markdown,
-                            "evidence": result.evidence,
-                            "artifacts": result.artifacts,
-                        },
-                    )
-                except Exception as e:
-                    add_turn(int(new_tid), "assistant", f"오류: {e}")
+            # 4) LLM 호출 + 저장
+            try:
+                result = call_rag_api(msg, top_k=int(st.session_state["top_k"]), extra_context=extra_ctx)
+                add_turn(
+                    int(new_tid),
+                    "assistant",
+                    result.answer_markdown,
+                    payload={
+                        "answer_markdown": result.answer_markdown,
+                        "evidence": result.evidence,
+                        "artifacts": result.artifacts,
+                    },
+                )
+            except Exception as e:
+                add_turn(int(new_tid), "assistant", f"오류: {e}")
 
-                # 5) 생성된 질문을 선택 상태로 만들고, 입력/업로드 초기화
-                set_thread(int(new_tid))
-                st.session_state["chat_input"] = ""
-                st.session_state["upload_blobs"] = []
-                st.rerun()
+            # 5) 생성된 질문을 선택 상태로 만들고, 업로드 초기화
+            set_thread(int(new_tid))
+            st.session_state["upload_blobs"] = []
+            st.rerun()
 
         st.markdown("</div>", unsafe_allow_html=True)
 
