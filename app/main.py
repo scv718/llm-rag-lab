@@ -2,6 +2,7 @@
 
 import os
 import io
+import re
 import traceback
 import hashlib
 import PyPDF2
@@ -83,6 +84,193 @@ latest_target = {
     "id": "",       # doc_id | repo_id
     "filename": "",
 }
+
+def extract_search_keywords(question: str) -> list[str]:
+    q = (question or "").strip()
+    if not q:
+        return []
+
+    stopwords = {
+        "알려줘", "보여줘", "찾아줘", "찾아", "관련", "포함", "포함된",
+        "코드", "코드라인", "라인", "부분", "위치", "어디", "어느",
+        "있는", "나오는", "사용하는", "사용된", "호출", "호출부",
+        "정의", "정의된", "메서드", "함수", "클래스", "문자열",
+        "조회", "검색", "전체", "목록", "출력", "좀", "이", "가", "을", "를",
+        "은", "는", "의", "에서", "으로", "로", "와", "과"
+    }
+
+    results = []
+
+    # 1) 따옴표/백틱 문자열 우선 추출
+    quoted_patterns = [
+        r"'([^']+)'",
+        r'"([^"]+)"',
+        r"`([^`]+)`",
+    ]
+    for pattern in quoted_patterns:
+        for m in re.findall(pattern, q):
+            token = m.strip()
+            if token and token not in results:
+                results.append(token)
+
+    # 2) 경로/API 패턴 추출
+    for m in re.findall(r'(/[A-Za-z0-9_\-./{}]+)', q):
+        token = m.strip()
+        if token and token not in results:
+            results.append(token)
+
+            # /api/login -> login 도 보조 키워드로 추가
+            last_seg = token.rstrip("/").split("/")[-1]
+            if last_seg and last_seg not in results:
+                results.append(last_seg)
+
+    # 3) 식별자 추출 (camelCase, PascalCase, UPPER_CASE, snake_case 등)
+    for m in re.findall(r'\b[A-Za-z_][A-Za-z0-9_]{1,}\b', q):
+        token = m.strip()
+        lower = token.lower()
+
+        if lower in stopwords:
+            continue
+
+        if lower in {
+            "code", "line", "lines", "method", "class", "function",
+            "find", "show", "search", "keyword"
+        }:
+            continue
+
+        if token not in results:
+            results.append(token)
+
+    # 4) 조사 제거 보조 처리
+    normalized = re.sub(r'[^\w\s/.\-`"\']', ' ', q)
+    for raw in normalized.split():
+        token = raw.strip()
+        if not token:
+            continue
+
+        token = re.sub(r'(이|가|을|를|은|는|의|에|에서|으로|로|와|과|도|만|좀)$', '', token)
+        if not token:
+            continue
+
+        lower = token.lower()
+        if token in stopwords or lower in stopwords:
+            continue
+
+        if re.search(r'[A-Za-z0-9_/.\-]', token) or len(token) >= 2:
+            if token not in results:
+                results.append(token)
+
+    # 5) 너무 일반적인 토큰 제거
+    ban = {
+        "코드", "라인", "부분", "위치", "어디", "관련", "포함", "포함된",
+        "사용", "사용된", "정의", "호출", "조회", "검색", "목록", "전체"
+    }
+    filtered = [t for t in results if t not in ban]
+
+    # 긴 토큰 우선
+    filtered.sort(key=lambda x: (-len(x), x.lower()))
+    return filtered[:8]
+
+
+def keyword_search_in_repo(repo_dir: Path, keywords: list[str], limit: int = 200) -> list[dict]:
+    results = []
+    seen = set()
+
+    if not repo_dir.exists() or not keywords:
+        return results
+
+    allowed_exts = {
+        ".java", ".kt", ".py", ".js", ".ts", ".tsx", ".jsx",
+        ".xml", ".yml", ".yaml", ".properties", ".sql",
+        ".cpp", ".c", ".cs", ".go", ".rb", ".php"
+    }
+
+    for root, _, files in os.walk(repo_dir):
+        for file_name in files:
+            ext = Path(file_name).suffix.lower()
+            if ext not in allowed_exts:
+                continue
+
+            file_path = Path(root) / file_name
+
+            try:
+                with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                    for line_no, line in enumerate(f, start=1):
+                        line_text = line.rstrip("\n")
+                        line_lower = line_text.lower()
+
+                        matched_keywords = [
+                            kw for kw in keywords
+                            if kw and kw.lower() in line_lower
+                        ]
+
+                        if not matched_keywords:
+                            continue
+
+                        rel_path = str(file_path.relative_to(repo_dir)).replace("\\", "/")
+                        dedup_key = (rel_path, line_no, line_text.strip())
+                        if dedup_key in seen:
+                            continue
+                        seen.add(dedup_key)
+
+                        results.append({
+                            "source": "keyword",
+                            "path": rel_path,
+                            "line": line_no,
+                            "text": line_text.strip(),
+                            "matched_keywords": matched_keywords,
+                        })
+
+                        if len(results) >= limit:
+                            return results
+
+            except Exception:
+                continue
+
+    return results
+
+
+def merge_search_results(keyword_hits: list[dict], vector_hits: list[dict]) -> list[dict]:
+    merged = []
+    seen_keyword_lines = set()
+
+    # keyword hit 먼저
+    for h in keyword_hits:
+        merged.append(h)
+        seen_keyword_lines.add((h["path"], h["line"]))
+
+    # vector hit 추가
+    for h in vector_hits:
+        md = h["metadata"]
+        if md.get("kind") != "code":
+            merged.append({
+                "source": "vector",
+                "metadata": md,
+                "document": h["document"],
+                "distance": h["distance"],
+            })
+            continue
+
+        path = md.get("path")
+        start_line = md.get("start_line")
+        end_line = md.get("end_line")
+
+        overlapped = False
+        if path and start_line is not None and end_line is not None:
+            for kw_path, kw_line in seen_keyword_lines:
+                if kw_path == path and start_line <= kw_line <= end_line:
+                    overlapped = True
+                    break
+
+        if not overlapped:
+            merged.append({
+                "source": "vector",
+                "metadata": md,
+                "document": h["document"],
+                "distance": h["distance"],
+            })
+
+    return merged
 
 class AskRequest(BaseModel):
     question: str
@@ -247,13 +435,13 @@ async def upload(file: UploadFile = File(...)):
 @app.post("/rag/ask")
 def rag_ask(request: AskRequest):
     """
-    질문 → 벡터 검색(top-k) → 검색된 chunk만 컨텍스트로 LLM 답변 생성
+    질문 → keyword search + vector search → 결과 merge → LLM 답변 생성
     - 최신 업로드 대상(latest_target)에 대해서만 검색(MVP)
-    - doc/code 둘 다 들어오면 kind 필터로 제어
+    - code는 hybrid search, doc는 vector search 중심
     """
     try:
         question = request.question.strip()
-        top_k = max(1, min(int(request.top_k), 10))
+        top_k = max(1, min(int(request.top_k), 30))
 
         if not latest_target.get("id"):
             raise HTTPException(status_code=400, detail="먼저 /upload 로 PDF 또는 ZIP을 업로드하세요.")
@@ -261,51 +449,90 @@ def rag_ask(request: AskRequest):
         qvec = embed_query(question)
 
         where = None
+        repo_extract_dir = None
+
         if latest_target["kind"] == "doc":
             where = {"$and": [{"kind": "doc"}, {"doc_id": latest_target["id"]}]}
+
         elif latest_target["kind"] == "code":
             where = {"$and": [{"kind": "code"}, {"repo_id": latest_target["id"]}]}
+            repo_extract_dir = REPO_DIR / latest_target["id"]
 
-        hits = vs.query(query_embedding=qvec, n_results=top_k, where=where)
+        # 1) vector search
+        vector_hits = vs.query(query_embedding=qvec, n_results=top_k, where=where)
+
+        # 2) keyword search (코드일 때만)
+        keywords = extract_search_keywords(question)
+        keyword_hits = []
+
+        if latest_target["kind"] == "code" and repo_extract_dir:
+            keyword_hits = keyword_search_in_repo(
+                repo_dir=repo_extract_dir,
+                keywords=keywords,
+                limit=200,
+            )
+
+        # 3) merge
+        merged_hits = merge_search_results(keyword_hits, vector_hits)
+
         context_lines = ["[참고 발췌]"]
         citations = []
 
-        for h in hits:
-            md = h["metadata"]
-            text = h["document"]
-            dist = h["distance"]
-
-            if md.get("kind") == "doc":
-                context_lines.append(f"- (kind=doc, page={md.get('page')}, chunk_id={md.get('chunk_id','')}) {text}")
-                citations.append({
-                    "kind": "doc",
-                    "filename": md.get("filename"),
-                    "page": md.get("page"),
-                    "chunk_id": md.get("chunk_id"),
-                    "chunk_index": md.get("chunk_index"),
-                    "distance": dist,
-                })
-            else:
+        for h in merged_hits:
+            if h["source"] == "keyword":
                 context_lines.append(
-                    f"- (kind=code, path={md.get('path')}, L{md.get('start_line')}-L{md.get('end_line')}, chunk_id={md.get('chunk_id','')}) {text}"
+                    f"- (kind=keyword, path={h['path']}, line={h['line']}, keywords={','.join(h['matched_keywords'])}) {h['text']}"
                 )
                 citations.append({
-                    "kind": "code",
-                    "filename": md.get("filename"),
-                    "path": md.get("path"),
-                    "start_line": md.get("start_line"),
-                    "end_line": md.get("end_line"),
-                    "chunk_id": md.get("chunk_id"),
-                    "distance": dist,
+                    "kind": "keyword",
+                    "path": h["path"],
+                    "line": h["line"],
+                    "matched_keywords": h["matched_keywords"],
+                    "text": h["text"],
                 })
+
+            elif h["source"] == "vector":
+                md = h["metadata"]
+                text = h["document"]
+                dist = h["distance"]
+
+                if md.get("kind") == "doc":
+                    context_lines.append(
+                        f"- (kind=doc, page={md.get('page')}, chunk_id={md.get('chunk_id','')}) {text}"
+                    )
+                    citations.append({
+                        "kind": "doc",
+                        "filename": md.get("filename"),
+                        "page": md.get("page"),
+                        "chunk_id": md.get("chunk_id"),
+                        "chunk_index": md.get("chunk_index"),
+                        "distance": dist,
+                    })
+                else:
+                    context_lines.append(
+                        f"- (kind=code, path={md.get('path')}, L{md.get('start_line')}-L{md.get('end_line')}, chunk_id={md.get('chunk_id','')}) {text}"
+                    )
+                    citations.append({
+                        "kind": "code",
+                        "filename": md.get("filename"),
+                        "path": md.get("path"),
+                        "start_line": md.get("start_line"),
+                        "end_line": md.get("end_line"),
+                        "chunk_id": md.get("chunk_id"),
+                        "distance": dist,
+                    })
 
         context = "\n".join(context_lines)
 
         system = (
             "당신은 한국어로 답변하는 백엔드 전문가입니다. "
-            "반드시 제공된 [참고 발췌] 범위 안에서만 답하고, 근거가 부족하면 부족하다고 말하세요. "
+            "반드시 제공된 [참고 발췌] 범위 안에서만 답하세요. "
+            "참고 발췌에는 keyword 검색 결과와 vector 검색 결과가 함께 포함될 수 있습니다. "
+            "파일 경로, 줄 번호, 코드 라인이 있으면 우선적으로 활용하세요. "
+            "근거가 부족하면 부족하다고 말하세요. "
             "마지막에 질문으로 끝내지 마세요."
         )
+
         prompt = f"[SYSTEM]\n{system}\n\n[USER]\n{question}\n\n{context}"
 
         resp = gen_client.models.generate_content(
@@ -316,8 +543,11 @@ def rag_ask(request: AskRequest):
         return {
             "answer": resp.text,
             "citations": citations,
-            "retrieved_k": len(hits),
+            "retrieved_k": len(merged_hits),
             "target": latest_target,
+            "keywords": keywords,
+            "keyword_hits": len(keyword_hits),
+            "vector_hits": len(vector_hits),
         }
 
     except HTTPException:
