@@ -86,7 +86,7 @@ latest_target = {
 
 class AskRequest(BaseModel):
     question: str
-    top_k: int = 5
+    top_k: int = 200
 
 @app.post("/upload")
 async def upload(file: UploadFile = File(...)):
@@ -97,6 +97,7 @@ async def upload(file: UploadFile = File(...)):
     서버가 자동 판별
     """
     try:
+        print("CHROMA PATH:", CHROMA_DIR)
         raw = await file.read()
         filename = file.filename or "uploaded"
 
@@ -131,7 +132,7 @@ async def upload(file: UploadFile = File(...)):
 
             chunk_texts = [c.text for c in all_chunks]
             if chunk_texts:
-                vectors = embed_documents(emb_client, chunk_texts, title=filename)
+                vectors = embed_documents(chunk_texts)
 
                 ids = [c.chunk_id for c in all_chunks]
                 metadatas = [
@@ -201,7 +202,7 @@ async def upload(file: UploadFile = File(...)):
 
             texts = [c.text for c in all_chunks]
             if texts:
-                vectors = embed_documents(emb_client, texts, title=filename)
+                vectors = embed_documents(texts)
 
                 ids = [c.chunk_id for c in all_chunks]
                 metadatas = [
@@ -257,7 +258,7 @@ def rag_ask(request: AskRequest):
         if not latest_target.get("id"):
             raise HTTPException(status_code=400, detail="먼저 /upload 로 PDF 또는 ZIP을 업로드하세요.")
 
-        qvec = embed_query(emb_client, question)
+        qvec = embed_query(question)
 
         where = None
         if latest_target["kind"] == "doc":
