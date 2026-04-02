@@ -1,6 +1,5 @@
 import streamlit as st
 
-from app.db.doc_repo import save_project_doc
 from app.db.database import db_init
 
 from app.ui.components.left_panel import render_left_panel
@@ -54,7 +53,7 @@ col_left, col_mid, col_right = st.columns([1.1, 2.2, 2.7], gap="large")
 
 
 with col_left:
-    render_left_panel(set_project, save_project_doc)
+    render_left_panel(set_project, None)
 
 with col_mid:
     render_mid_panel(set_thread)

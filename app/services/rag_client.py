@@ -5,7 +5,7 @@ from typing import Any
 
 
 RAG_API_URL = os.environ.get("RAG_API_URL", "http://127.0.0.1:8000/rag/ask")
-USE_REAL_API = os.environ.get("USE_REAL_API", "false").lower() == "true"
+USE_REAL_API = os.environ.get("USE_REAL_API", "true").lower() == "true"
 
 
 @dataclass
@@ -37,7 +37,7 @@ class RagResult:
         return RagResult(str(payload), [], [])
 
 
-def call_rag_api(question: str, top_k: int):
+def call_rag_api(question: str, top_k: int, project_id: int | None = None):
 
     if not USE_REAL_API:
 
@@ -53,6 +53,8 @@ def call_rag_api(question: str, top_k: int):
         "question": question,
         "top_k": int(top_k),
     }
+    if project_id is not None:
+        payload["project_id"] = int(project_id)
 
     r = requests.post(RAG_API_URL, json=payload, timeout=180)
     r.raise_for_status()

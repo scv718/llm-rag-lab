@@ -9,6 +9,10 @@ UPLOAD_API_URL = os.environ.get(
 
 
 def upload_to_server(file_blob):
+    return upload_to_server_for_project(file_blob, project_id=None)
+
+
+def upload_to_server_for_project(file_blob, project_id):
 
     files = {
         "file": (
@@ -21,6 +25,7 @@ def upload_to_server(file_blob):
     r = requests.post(
         UPLOAD_API_URL,
         files=files,
+        data={"project_id": str(project_id)} if project_id is not None else None,
         timeout=300,
     )
 

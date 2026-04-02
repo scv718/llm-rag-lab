@@ -1,0 +1,39 @@
+{
+  "cases": [
+    {
+      "name": "auth controller path boost",
+      "question": "AuthController에서 /api/login 처리 위치 알려줘",
+      "keywords": ["AuthController", "/api/login"],
+      "symbol_hints": ["AuthController"],
+      "expected_top_path": "auth/controller/AuthController.java",
+      "hits": [
+        {
+          "source": "vector",
+          "metadata": {
+            "kind": "code",
+            "path": "auth/controller/AuthController.java",
+            "start_line": 10,
+            "end_line": 40,
+            "chunk_id": "chunk-1",
+            "filename": "demo.zip"
+          },
+          "document": "public class AuthController { @PostMapping(\"/api/login\") }",
+          "distance": 0.24
+        },
+        {
+          "source": "vector",
+          "metadata": {
+            "kind": "code",
+            "path": "user/service/ProfileService.java",
+            "start_line": 1,
+            "end_line": 20,
+            "chunk_id": "chunk-2",
+            "filename": "demo.zip"
+          },
+          "document": "public class ProfileService { }",
+          "distance": 0.18
+        }
+      ]
+    }
+  ]
+}

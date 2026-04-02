@@ -39,3 +39,13 @@ def get_project_target(project_id):
     ).fetchone()
     conn.close()
     return row
+
+
+def clear_project_target(project_id):
+    conn = db_conn()
+    conn.execute(
+        "DELETE FROM project_targets WHERE project_id=?",
+        (project_id,)
+    )
+    conn.commit()
+    conn.close()

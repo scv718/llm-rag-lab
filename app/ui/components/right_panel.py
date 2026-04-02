@@ -28,11 +28,10 @@ def render_right_panel():
         st.markdown(payload.get("answer_markdown", ""))
 
     with tabs[1]:
-
         for ev in payload.get("evidence", []):
-
-            with st.expander(ev.get("title", "Evidence")):
-                st.code(ev.get("snippet", ""))
+            title = build_evidence_title(ev)
+            with st.expander(title):
+                st.json(ev)
 
     with tabs[2]:
 
@@ -41,3 +40,20 @@ def render_right_panel():
             st.code(art.get("content", ""))
 
     st.markdown("</div>", unsafe_allow_html=True)
+
+
+def build_evidence_title(ev):
+    kind = ev.get("kind", "evidence")
+
+    if kind == "code":
+        path = ev.get("path", ev.get("filename", "unknown"))
+        return f"code · {path} · L{ev.get('start_line', '?')}-L{ev.get('end_line', '?')}"
+
+    if kind == "doc":
+        filename = ev.get("filename", "document")
+        return f"doc · {filename} · page {ev.get('page', '?')}"
+
+    if kind == "keyword":
+        return f"keyword · {ev.get('path', 'unknown')} · line {ev.get('line', '?')}"
+
+    return "Evidence"

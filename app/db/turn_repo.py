@@ -43,6 +43,15 @@ def add_turn(thread_id, role, content, payload=None):
         )
     )
 
+    cur.execute(
+        """
+        UPDATE threads
+        SET updated_at=?
+        WHERE id=?
+        """,
+        (now_ts(), thread_id)
+    )
+
     conn.commit()
 
     rid = cur.lastrowid
@@ -50,3 +59,25 @@ def add_turn(thread_id, role, content, payload=None):
     conn.close()
 
     return rid
+
+def delete_turns(thread_id: int, turn_ids: list[int]):
+    if not turn_ids:
+        return
+
+    conn = db_conn()
+    cur = conn.cursor()
+
+    placeholders = ",".join(["?"] * len(turn_ids))
+    params = [thread_id, *turn_ids]
+
+    cur.execute(
+        f"""
+        DELETE FROM turns
+        WHERE thread_id = ?
+          AND id IN ({placeholders})
+        """,
+        params
+    )
+
+    conn.commit()
+    conn.close()

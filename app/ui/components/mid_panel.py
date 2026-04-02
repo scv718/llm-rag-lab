@@ -1,4 +1,5 @@
 import streamlit as st
+import requests
 
 from app.db.thread_repo import list_threads, create_thread
 from app.db.turn_repo import add_turn, list_turns
@@ -40,15 +41,26 @@ def render_mid_panel(set_thread):
     msg = st.chat_input("질문 입력")
 
     if msg:
+        current_tid = tid or create_thread(pid, msg[:40])
 
-        new_tid = create_thread(pid, msg[:40])
+        add_turn(current_tid, "user", msg)
 
-        add_turn(new_tid, "user", msg)
-
-        result = call_rag_api(msg, 5)
+        try:
+            result = call_rag_api(msg, 5, project_id=pid)
+        except requests.HTTPError as exc:
+            detail = exc.response.text if exc.response is not None else str(exc)
+            add_turn(current_tid, "assistant", f"요청 실패: {detail}")
+            set_thread(current_tid)
+            st.error("RAG API 요청에 실패했습니다.")
+            st.rerun()
+        except Exception as exc:
+            add_turn(current_tid, "assistant", f"처리 실패: {exc}")
+            set_thread(current_tid)
+            st.error("질문 처리 중 오류가 발생했습니다.")
+            st.rerun()
 
         add_turn(
-            new_tid,
+            current_tid,
             "assistant",
             result.answer_markdown,
             payload={
@@ -58,7 +70,7 @@ def render_mid_panel(set_thread):
             }
         )
 
-        set_thread(new_tid)
+        set_thread(current_tid)
 
         st.rerun()
 

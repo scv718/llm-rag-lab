@@ -1,5 +1,6 @@
 from pathlib import Path
 import hashlib
+import uuid
 from .database import db_conn
 from datetime import datetime
 
@@ -28,9 +29,21 @@ def list_project_docs(project_id):
     return rows
 
 
-def save_project_doc(project_id, f, doc_id):
-    raw = f.getvalue()
+def save_project_doc(project_id, f, doc_id=None):
+    return save_project_doc_blob(
+        project_id=project_id,
+        filename=f.name,
+        raw=f.getvalue(),
+        mime=getattr(f, "type", None),
+        doc_id=doc_id,
+    )
+
+
+def save_project_doc_blob(project_id, filename, raw, mime=None, doc_id=None):
     sha = hashlib.sha256(raw).hexdigest()
+
+    if doc_id is None:
+        doc_id = str(uuid.uuid4())
 
     conn = db_conn()
 
@@ -44,7 +57,9 @@ def save_project_doc(project_id, f, doc_id):
         return int(row["id"])
 
     dirp = _proj_doc_dir(project_id)
-    out_path = dirp / f.name
+
+    safe_name = f"{doc_id}_{filename}"
+    out_path = dirp / safe_name
     out_path.write_bytes(raw)
 
     cur = conn.cursor()
@@ -56,8 +71,8 @@ def save_project_doc(project_id, f, doc_id):
         """,
         (
             project_id,
-            f.name,
-            getattr(f, "type", None),
+            filename,
+            mime,
             len(raw),
             sha,
             doc_id,
