@@ -14,9 +14,11 @@ from app.db.repo_repo import (
 )
 from app.db.project_repo import create_project, list_projects
 from app.db.target_repo import (
-    clear_project_target,
-    get_project_target,
-    upsert_project_target,
+    add_project_target,
+    get_project_target_settings,
+    list_project_targets,
+    remove_project_target,
+    set_project_targeting_mode,
 )
 from app.services.upload_client import upload_to_server_for_project
 
@@ -69,12 +71,26 @@ def render_left_panel(set_project, _unused=None):
             return
 
         project_hashes = uploaded_files_by_project.setdefault(project_id, set())
-        target = get_project_target(project_id)
+        active_targets = list_project_targets(project_id)
+        active_target_keys = {(row["target_kind"], row["target_ref_id"]) for row in active_targets}
+        target_settings = get_project_target_settings(project_id)
+        active_only_default = bool(target_settings["active_only"]) if target_settings else False
 
-        if target:
-            st.caption(f"활성 타깃: `{target['target_kind']}` / `{target['filename']}`")
+        active_only = st.checkbox(
+            "Use active selection only",
+            value=active_only_default,
+            key=f"active_only_{project_id}",
+        )
+        if active_only != active_only_default:
+            set_project_targeting_mode(project_id, active_only)
+
+        if active_only:
+            if active_targets:
+                st.caption(f"활성 자산만 검색 중: {len(active_targets)}개 선택됨")
+            else:
+                st.caption("활성 자산 검색이 켜져 있습니다. 아래에서 자산을 선택하세요.")
         else:
-            st.caption("활성 타깃이 없습니다. 업로드하거나 목록에서 선택하세요.")
+            st.caption("전체검색 중입니다. 활성 자산을 선택해 두면 필요할 때만 좁혀서 검색할 수 있습니다.")
 
         uploads = st.file_uploader(
             "문서 또는 코드 업로드",
@@ -110,7 +126,7 @@ def render_left_panel(set_project, _unused=None):
                         mime=file.type,
                         doc_id=response["doc_id"],
                     )
-                    upsert_project_target(project_id, "doc", response["doc_id"], file.name)
+                    add_project_target(project_id, "doc", response["doc_id"], file.name)
                 else:
                     save_project_repo_blob(
                         project_id=project_id,
@@ -119,7 +135,7 @@ def render_left_panel(set_project, _unused=None):
                         repo_id=response["repo_id"],
                         extract_path=response["extract_path"],
                     )
-                    upsert_project_target(project_id, "code", response["repo_id"], file.name)
+                    add_project_target(project_id, "code", response["repo_id"], file.name)
 
                 project_hashes.add(file_sha)
                 uploaded_count += 1
@@ -139,19 +155,19 @@ def render_left_panel(set_project, _unused=None):
             render_asset_row(
                 label=f"📄 {doc['filename']}",
                 row_id=int(doc["id"]),
-                select_key=f"doc_sel_{doc['id']}",
+                toggle_key=f"doc_tog_{doc['id']}",
                 delete_key=f"doc_del_{doc['id']}",
-                is_active=is_active_target(target, "doc", doc["doc_id"]),
-                on_select=lambda doc_id=doc["doc_id"], filename=doc["filename"]: upsert_project_target(
+                is_active=is_active_target(active_target_keys, "doc", doc["doc_id"]),
+                on_toggle=lambda doc_id=doc["doc_id"], filename=doc["filename"]: toggle_target(
                     project_id,
                     "doc",
                     doc_id,
                     filename,
+                    active_target_keys,
                 ),
                 on_delete=lambda row_id=int(doc["id"]), doc_id=doc["doc_id"]: delete_doc_asset(
                     project_id,
                     row_id,
-                    target,
                     doc_id,
                 ),
             )
@@ -164,19 +180,19 @@ def render_left_panel(set_project, _unused=None):
             render_asset_row(
                 label=f"🧩 {repo['filename']}",
                 row_id=int(repo["id"]),
-                select_key=f"repo_sel_{repo['id']}",
+                toggle_key=f"repo_tog_{repo['id']}",
                 delete_key=f"repo_del_{repo['id']}",
-                is_active=is_active_target(target, "code", repo["repo_id"]),
-                on_select=lambda repo_id=repo["repo_id"], filename=repo["filename"]: upsert_project_target(
+                is_active=is_active_target(active_target_keys, "code", repo["repo_id"]),
+                on_toggle=lambda repo_id=repo["repo_id"], filename=repo["filename"]: toggle_target(
                     project_id,
                     "code",
                     repo_id,
                     filename,
+                    active_target_keys,
                 ),
                 on_delete=lambda row_id=int(repo["id"]), repo_id=repo["repo_id"]: delete_repo_asset(
                     project_id,
                     row_id,
-                    target,
                     repo_id,
                 ),
             )
@@ -184,7 +200,7 @@ def render_left_panel(set_project, _unused=None):
     st.markdown("</div>", unsafe_allow_html=True)
 
 
-def render_asset_row(label, row_id, select_key, delete_key, is_active, on_select, on_delete):
+def render_asset_row(label, row_id, toggle_key, delete_key, is_active, on_toggle, on_delete):
     c1, c2, c3 = st.columns([4.0, 1.2, 1.0])
 
     with c1:
@@ -192,8 +208,9 @@ def render_asset_row(label, row_id, select_key, delete_key, is_active, on_select
         st.markdown(f"{label}{suffix}")
 
     with c2:
-        if st.button("선택", key=select_key, use_container_width=True):
-            on_select()
+        button_label = "해제" if is_active else "활성"
+        if st.button(button_label, key=toggle_key, use_container_width=True):
+            on_toggle()
             st.rerun()
 
     with c3:
@@ -202,21 +219,22 @@ def render_asset_row(label, row_id, select_key, delete_key, is_active, on_select
             st.rerun()
 
 
-def is_active_target(target, kind, ref_id):
-    return bool(
-        target
-        and target["target_kind"] == kind
-        and target["target_ref_id"] == ref_id
-    )
+def is_active_target(active_target_keys, kind, ref_id):
+    return (kind, ref_id) in active_target_keys
 
 
-def delete_doc_asset(project_id, row_id, target, doc_id):
+def toggle_target(project_id, kind, ref_id, filename, active_target_keys):
+    if (kind, ref_id) in active_target_keys:
+        remove_project_target(project_id, kind, ref_id)
+    else:
+        add_project_target(project_id, kind, ref_id, filename)
+
+
+def delete_doc_asset(project_id, row_id, doc_id):
     delete_project_doc(row_id)
-    if is_active_target(target, "doc", doc_id):
-        clear_project_target(project_id)
+    remove_project_target(project_id, "doc", doc_id)
 
 
-def delete_repo_asset(project_id, row_id, target, repo_id):
+def delete_repo_asset(project_id, row_id, repo_id):
     delete_project_repo(row_id)
-    if is_active_target(target, "code", repo_id):
-        clear_project_target(project_id)
+    remove_project_target(project_id, "code", repo_id)

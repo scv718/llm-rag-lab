@@ -4,7 +4,9 @@ from fastapi import HTTPException
 
 from app.core.config import DEFAULT_RETRIEVAL_LIMIT, GEMINI_MODEL, gen_client
 from app.core.state import latest_target
-from app.db.target_repo import get_project_target
+from app.db.doc_repo import list_project_docs
+from app.db.repo_repo import list_project_repos
+from app.db.target_repo import get_project_target_settings, list_project_targets
 from app.services.retrieval_service import retrieve_context
 
 
@@ -14,8 +16,8 @@ def ask_rag(question: str, top_k: int, project_id: int | None = None) -> dict:
         top_k = max(1, min(int(top_k), DEFAULT_RETRIEVAL_LIMIT))
 
         target = resolve_target(project_id)
-        if not target.get("id"):
-            raise HTTPException(status_code=400, detail="질문할 대상을 먼저 업로드하거나 선택하세요.")
+        if not target:
+            raise HTTPException(status_code=400, detail="질문할 대상을 먼저 업로드하세요.")
 
         retrieval = retrieve_context(question=question, target=target, top_k=top_k)
         system = (
@@ -55,14 +57,27 @@ def ask_rag(question: str, top_k: int, project_id: int | None = None) -> dict:
 
 def resolve_target(project_id: int | None) -> dict:
     if project_id is not None:
-        row = get_project_target(project_id)
-        if not row:
+        docs = list_project_docs(project_id)
+        repos = list_project_repos(project_id)
+        if not docs and not repos:
             return {}
+
+        target_settings = get_project_target_settings(project_id)
+        active_targets = list_project_targets(project_id)
+        active_only = bool(target_settings["active_only"]) if target_settings else False
+
+        if active_only and not active_targets:
+            raise HTTPException(status_code=400, detail="활성 자산 검색이 켜져 있습니다. 먼저 활성 자산을 선택하세요.")
+
         return {
-            "kind": row["target_kind"],
-            "id": row["target_ref_id"],
-            "filename": row["filename"],
+            "kind": "project",
+            "id": str(project_id),
+            "filename": f"project-{project_id}",
             "project_id": project_id,
+            "active_only": active_only,
+            "active_targets": active_targets,
+            "doc_count": len(docs),
+            "repo_count": len(repos),
         }
 
     if latest_target.get("id"):

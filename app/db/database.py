@@ -84,13 +84,13 @@ def db_init():
         """
     )
 
+    _ensure_project_targets_schema(cur)
+
     cur.execute(
         """
-        CREATE TABLE IF NOT EXISTS project_targets (
+        CREATE TABLE IF NOT EXISTS project_target_settings (
             project_id INTEGER PRIMARY KEY,
-            target_kind TEXT NOT NULL,
-            target_ref_id TEXT NOT NULL,
-            filename TEXT NOT NULL,
+            active_only INTEGER NOT NULL DEFAULT 0,
             updated_at TEXT NOT NULL
         );
         """
@@ -98,3 +98,54 @@ def db_init():
 
     conn.commit()
     conn.close()
+
+
+def _ensure_project_targets_schema(cur):
+    table = cur.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='project_targets'"
+    ).fetchone()
+
+    if not table:
+        cur.execute(
+            """
+            CREATE TABLE project_targets (
+                project_id INTEGER NOT NULL,
+                target_kind TEXT NOT NULL,
+                target_ref_id TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(project_id, target_kind, target_ref_id)
+            );
+            """
+        )
+        return
+
+    columns = cur.execute("PRAGMA table_info(project_targets)").fetchall()
+    column_names = [row[1] for row in columns]
+    project_id_column = next((row for row in columns if row[1] == "project_id"), None)
+    uses_legacy_single_target = bool(project_id_column and project_id_column[5] == 1 and "target_ref_id" in column_names)
+
+    if not uses_legacy_single_target:
+        return
+
+    cur.execute("ALTER TABLE project_targets RENAME TO project_targets_legacy")
+    cur.execute(
+        """
+        CREATE TABLE project_targets (
+            project_id INTEGER NOT NULL,
+            target_kind TEXT NOT NULL,
+            target_ref_id TEXT NOT NULL,
+            filename TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(project_id, target_kind, target_ref_id)
+        );
+        """
+    )
+    cur.execute(
+        """
+        INSERT INTO project_targets (project_id, target_kind, target_ref_id, filename, updated_at)
+        SELECT project_id, target_kind, target_ref_id, filename, updated_at
+        FROM project_targets_legacy
+        """
+    )
+    cur.execute("DROP TABLE project_targets_legacy")

@@ -7,7 +7,6 @@ from fastapi import HTTPException
 
 from app.core.config import DOCS_DIR, REPO_DIR, UPLOAD_DIR, vs
 from app.core.state import latest_target
-from app.db.target_repo import upsert_project_target
 from app.services.chunking import TextChunk, chunk_text_by_chars
 from app.services.embeddings import embed_documents
 from app.services.zip_ingest import (
@@ -386,9 +385,6 @@ def finalize_doc_ingest(
     latest_target["id"] = doc_id
     latest_target["filename"] = filename
 
-    if project_id is not None:
-        upsert_project_target(project_id, "doc", doc_id, filename)
-
     response = {
         "status": "success",
         "kind": "doc",
@@ -437,6 +433,3 @@ def finalize_code_ingest(
     latest_target["kind"] = "code"
     latest_target["id"] = repo_id
     latest_target["filename"] = filename
-
-    if project_id is not None:
-        upsert_project_target(project_id, "code", repo_id, filename)
