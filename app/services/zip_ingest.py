@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Optional, Tuple
+from typing import Iterable, List, Tuple
 import os
 import zipfile
 import hashlib
@@ -153,6 +153,13 @@ def read_text_best_effort(path: Path, max_bytes: int = 2 * 1024 * 1024) -> str:
     - 인코딩은 utf-8 우선, 실패 시 cp949, latin-1 순으로 시도
     """
     raw = path.read_bytes()
+    return decode_text_best_effort(raw, max_bytes=max_bytes)
+
+
+def decode_text_best_effort(raw: bytes, max_bytes: int = 2 * 1024 * 1024) -> str:
+    """
+    바이트열을 텍스트로 best-effort 디코딩한다.
+    """
     if len(raw) > max_bytes:
         raw = raw[:max_bytes]
 

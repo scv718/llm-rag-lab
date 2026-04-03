@@ -345,11 +345,12 @@ def build_context_and_citations(ranked_hits: list[dict]) -> tuple[str, list[dict
 
         if metadata.get("kind") == "doc":
             context_lines.append(
-                f"- (kind=doc, score={hit['score']}, page={metadata.get('page')}, chunk_id={metadata.get('chunk_id', '')}) {document}"
+                f"- (kind=doc, source_type={metadata.get('source_type', 'doc')}, score={hit['score']}, page={metadata.get('page')}, chunk_id={metadata.get('chunk_id', '')}) {document}"
             )
             citations.append(
                 {
                     "kind": "doc",
+                    "source_type": metadata.get("source_type"),
                     "filename": metadata.get("filename"),
                     "page": metadata.get("page"),
                     "chunk_id": metadata.get("chunk_id"),
@@ -362,6 +363,7 @@ def build_context_and_citations(ranked_hits: list[dict]) -> tuple[str, list[dict
             citations.append(
                 {
                     "kind": "code",
+                    "source_type": metadata.get("source_type"),
                     "filename": metadata.get("filename"),
                     "path": metadata.get("path"),
                     "start_line": metadata.get("start_line"),
@@ -372,7 +374,7 @@ def build_context_and_citations(ranked_hits: list[dict]) -> tuple[str, list[dict
                 }
             )
             context_lines.append(
-                f"- (kind=code, score={hit['score']}, path={metadata.get('path')}, L{metadata.get('start_line')}-L{metadata.get('end_line')}, chunk_id={metadata.get('chunk_id', '')}) {document}"
+                f"- (kind=code, source_type={metadata.get('source_type', 'code')}, score={hit['score']}, path={metadata.get('path')}, L{metadata.get('start_line')}-L{metadata.get('end_line')}, chunk_id={metadata.get('chunk_id', '')}) {document}"
             )
 
     return "\n".join(context_lines), citations

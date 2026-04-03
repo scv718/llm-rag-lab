@@ -112,6 +112,8 @@ Streamlit UI
 - Google Gemini API
 - SQLite
 - PyPDF2
+- python-docx (`docx` 업로드 시 필요)
+- openpyxl (`xlsx` 업로드 시 필요)
 
 ## 프로젝트 구조
 
@@ -168,7 +170,12 @@ streamlit run app/ui/app_ui.py
 
 ### `POST /upload`
 
-PDF 또는 ZIP 파일을 업로드하고, `project_id`가 있으면 해당 프로젝트의 활성 타깃을 갱신합니다.
+지원 업로드 형식:
+
+- 문서형: `pdf`, `txt`, `md`, `docx`, `csv`, `xlsx`
+- 코드형: `zip`, 단일 코드파일 `java`, `py`, `js`, `ts`, `xml`, `yml`, `yaml`, `sql`
+
+`project_id`가 있으면 해당 프로젝트의 활성 타깃을 갱신합니다.
 
 응답 예시:
 

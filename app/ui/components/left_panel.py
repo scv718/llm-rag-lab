@@ -82,6 +82,7 @@ def render_left_panel(set_project, _unused=None):
             label_visibility="collapsed",
             key=f"asset_uploader_{project_id}",
         )
+        st.caption("지원 형식: pdf, zip, txt, md, docx, xlsx, csv, java, py, js, ts, xml, yml, yaml, sql")
 
         if uploads:
             uploaded_count = 0
@@ -155,7 +156,7 @@ def render_left_panel(set_project, _unused=None):
                 ),
             )
 
-        st.markdown("**코드 ZIP**")
+        st.markdown("**코드**")
         if not repos:
             st.caption("업로드된 코드 자산이 없습니다.")
 
