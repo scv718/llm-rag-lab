@@ -14,8 +14,17 @@ venv/
 
 # OS
 .DS_Store
-chroma_db/chroma.sqlite3
-chroma_db/79c78ac6-fe01-4c18-9343-9abe42654619/data_level0.bin
-chroma_db/79c78ac6-fe01-4c18-9343-9abe42654619/header.bin
-chroma_db/79c78ac6-fe01-4c18-9343-9abe42654619/length.bin
-chroma_db/79c78ac6-fe01-4c18-9343-9abe42654619/link_lists.bin
+
+# Local app/runtime data
+llm_ui.db
+*.db
+data/uploads/
+data/repos/
+data/chroma_db/
+data/projects/
+
+# Internal Codex session docs
+SESSION_NOTES.md
+CODEX_PROMPTS.md
+HANDOFF_TEMPLATE.md
+CODEX_WORKFLOW.md

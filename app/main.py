@@ -9,8 +9,10 @@ app = FastAPI()
 
 class AskRequest(BaseModel):
     question: str
-    top_k: int = 200
+    top_k: int = 10
     project_id: int | None = None
+    llm_provider: str | None = None
+    llm_model: str | None = None
 
 
 @app.post("/upload")
@@ -25,4 +27,10 @@ async def upload(
 
 @app.post("/rag/ask")
 def rag_ask(request: AskRequest):
-    return ask_rag(request.question, request.top_k, project_id=request.project_id)
+    return ask_rag(
+        request.question,
+        request.top_k,
+        project_id=request.project_id,
+        llm_provider=request.llm_provider,
+        llm_model=request.llm_model,
+    )
