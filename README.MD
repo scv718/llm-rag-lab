@@ -145,13 +145,10 @@ llm-rag-lab/
 
 ### 1. 환경 준비
 
-`.env` 예시:
+`.env.example`을 복사해서 `.env`를 만든 뒤 값을 채웁니다.
 
-```env
-GEMINI_API_KEY=your_api_key
-USE_REAL_API=true
-UPLOAD_API_URL=http://127.0.0.1:8000/upload
-RAG_API_URL=http://127.0.0.1:8000/rag/ask
+```bash
+cp .env.example .env
 ```
 
 ### 2. 설치
@@ -190,7 +187,16 @@ pip install -r requirements-extra.txt
 ### 3. FastAPI 실행
 
 ```bash
-uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+python3 run_server.py --reload
+```
+
+`run_server.py`는 자주 바꾸는 LLM provider/model 옵션을 인자로 넘길 수 있게 해둔 진입점입니다.
+
+예시:
+
+```bash
+python3 run_server.py --reload --llm-provider gemini
+python3 run_server.py --llm-provider openai_compatible --llm-model qwen2.5-coder:7b --openai-base-url http://127.0.0.1:11434/v1
 ```
 
 ### 4. Streamlit 실행
