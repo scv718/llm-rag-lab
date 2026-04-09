@@ -52,3 +52,11 @@ def create_thread(project_id, title, tag="general"):
     conn.close()
 
     return tid
+
+
+def delete_thread(thread_id):
+    conn = db_conn()
+    conn.execute("DELETE FROM turns WHERE thread_id=?", (thread_id,))
+    conn.execute("DELETE FROM threads WHERE id=?", (thread_id,))
+    conn.commit()
+    conn.close()

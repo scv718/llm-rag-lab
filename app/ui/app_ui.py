@@ -25,15 +25,18 @@ def ensure_state():
     st.session_state.setdefault("selected_project_id", None)
     st.session_state.setdefault("selected_thread_id", None)
     st.session_state.setdefault("upload_blobs", [])
+    st.session_state.setdefault("selected_llm_provider", "gemini")
+    st.session_state.setdefault("selected_llm_model", "")
+    st.session_state.setdefault("selected_llm_provider_ui", st.session_state["selected_llm_provider"])
 
 
-def set_project(pid: int):
+def set_project(pid: int | None):
 
     st.session_state["selected_project_id"] = pid
     st.session_state["selected_thread_id"] = None
 
 
-def set_thread(tid: int):
+def set_thread(tid: int | None):
 
     st.session_state["selected_thread_id"] = tid
 

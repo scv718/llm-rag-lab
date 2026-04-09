@@ -1,7 +1,9 @@
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from app.services.chunking import chunk_text_by_chars
-from app.services.zip_ingest import chunk_code_by_lines, decode_text_best_effort
+from app.services.zip_ingest import chunk_code_by_lines, decode_text_best_effort, extract_text_from_path
 from app.utils.file_utils import detect_file_kind
 
 
@@ -41,6 +43,43 @@ class FileTypeSupportTest(unittest.TestCase):
 
         self.assertEqual("main.py", chunks[0].path)
         self.assertEqual("python", chunks[0].lang)
+
+    def test_code_chunking_prefers_definition_boundaries(self):
+        text = (
+            "class AuthService:\n"
+            "    def login(self):\n"
+            "        return 'ok'\n"
+            "\n"
+            "    def logout(self):\n"
+            "        return 'bye'\n"
+            "\n"
+            "print('done')\n"
+        )
+
+        chunks = chunk_code_by_lines(
+            repo_id="repo-1",
+            rel_path="auth_service.py",
+            text=text,
+            lines_per_chunk=4,
+            overlap=1,
+        )
+
+        self.assertGreaterEqual(len(chunks), 2)
+        self.assertEqual(1, chunks[0].start_line)
+        self.assertTrue(chunks[0].end_line >= 4)
+        self.assertTrue(chunks[1].start_line <= 5)
+
+    def test_extract_text_from_path_supports_txt_and_csv_in_zip(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            txt_path = root / "notes.txt"
+            csv_path = root / "table.csv"
+
+            txt_path.write_text("hello zip text", encoding="utf-8")
+            csv_path.write_text("id,name\n1,Alice\n", encoding="utf-8")
+
+            self.assertIn("hello zip text", extract_text_from_path(txt_path))
+            self.assertIn("name: Alice", extract_text_from_path(csv_path))
 
 
 if __name__ == "__main__":

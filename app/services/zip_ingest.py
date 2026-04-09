@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import csv
+import io
 from pathlib import Path
 from typing import Iterable, List, Tuple
 import os
+import re
 import zipfile
 import hashlib
 
@@ -17,6 +20,10 @@ TEXT_EXTS = {
     ".properties", ".gradle", ".sql",
     ".sh", ".bat", ".ps1",
     ".ini", ".cfg",
+}
+
+ARCHIVE_DOC_EXTS = {
+    ".txt", ".md", ".csv", ".pdf", ".docx", ".xlsx", ".pptx",
 }
 
 # 업로드 zip 내부에서 흔히 섞이는 것들 제외
@@ -104,6 +111,16 @@ def _guess_lang(path: str) -> str:
     if p.name == "Dockerfile":
         return "dockerfile"
     ext = p.suffix.lower()
+    if ext == ".csv":
+        return "csv"
+    if ext == ".pdf":
+        return "pdf"
+    if ext == ".docx":
+        return "docx"
+    if ext == ".xlsx":
+        return "xlsx"
+    if ext == ".pptx":
+        return "pptx"
     if ext == ".py":
         return "python"
     if ext == ".java":
@@ -142,7 +159,7 @@ def iter_source_files(root: Path) -> Iterable[Path]:
             continue
 
         ext = p.suffix.lower()
-        if ext in TEXT_EXTS:
+        if ext in TEXT_EXTS or ext in ARCHIVE_DOC_EXTS:
             yield p
 
 
@@ -172,6 +189,127 @@ def decode_text_best_effort(raw: bytes, max_bytes: int = 2 * 1024 * 1024) -> str
     return raw.decode("utf-8", errors="ignore")
 
 
+def extract_text_from_path(path: Path, max_bytes: int = 2 * 1024 * 1024) -> str:
+    ext = path.suffix.lower()
+
+    if ext in TEXT_EXTS:
+        return read_text_best_effort(path, max_bytes=max_bytes)
+    if ext == ".csv":
+        return extract_csv_text(path, max_bytes=max_bytes)
+    if ext == ".pdf":
+        return extract_pdf_text(path, max_bytes=max_bytes)
+    if ext == ".docx":
+        return extract_docx_text(path)
+    if ext == ".xlsx":
+        return extract_xlsx_text(path)
+    if ext == ".pptx":
+        return extract_pptx_text(path)
+    return ""
+
+
+def extract_csv_text(path: Path, max_bytes: int = 2 * 1024 * 1024) -> str:
+    text = read_text_best_effort(path, max_bytes=max_bytes)
+    rows = list(csv.reader(io.StringIO(text)))
+    if not rows:
+        return ""
+
+    header = rows[0]
+    lines = []
+    for row_idx, row in enumerate(rows[1:], start=2):
+        pairs = []
+        for col_idx, value in enumerate(row):
+            key = header[col_idx].strip() if col_idx < len(header) and header[col_idx].strip() else f"col_{col_idx + 1}"
+            pairs.append(f"{key}: {value}")
+        if pairs:
+            lines.append(f"row {row_idx} | " + " | ".join(pairs))
+    return "\n".join(lines) if lines else text
+
+
+def extract_pdf_text(path: Path, max_bytes: int = 10 * 1024 * 1024) -> str:
+    try:
+        import PyPDF2
+    except ImportError:
+        return ""
+
+    raw = path.read_bytes()
+    if len(raw) > max_bytes:
+        raw = raw[:max_bytes]
+
+    reader = PyPDF2.PdfReader(io.BytesIO(raw))
+    pages = [(page.extract_text() or "").strip() for page in reader.pages]
+    return "\n\n".join([page for page in pages if page])
+
+
+def extract_docx_text(path: Path) -> str:
+    try:
+        from docx import Document
+    except ImportError:
+        return ""
+
+    document = Document(str(path))
+    blocks = []
+    for para in document.paragraphs:
+        text = para.text.strip()
+        if text:
+            blocks.append(text)
+    for table in document.tables:
+        for row_idx, row in enumerate(table.rows, start=1):
+            cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+            if cells:
+                blocks.append(f"table row {row_idx} | " + " | ".join(cells))
+    return "\n\n".join(blocks)
+
+
+def extract_xlsx_text(path: Path) -> str:
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        return ""
+
+    workbook = load_workbook(path, data_only=True, read_only=True)
+    lines = []
+    for sheet_name in workbook.sheetnames:
+        sheet = workbook[sheet_name]
+        header = None
+        for row_idx, row in enumerate(sheet.iter_rows(values_only=True), start=1):
+            values = ["" if value is None else str(value).strip() for value in row]
+            if not any(values):
+                continue
+            if header is None:
+                header = values
+                continue
+            pairs = []
+            for col_idx, value in enumerate(values):
+                if not value:
+                    continue
+                key = header[col_idx].strip() if col_idx < len(header) and header[col_idx].strip() else f"col_{col_idx + 1}"
+                pairs.append(f"{key}: {value}")
+            if pairs:
+                lines.append(f"sheet {sheet_name} row {row_idx} | " + " | ".join(pairs))
+    workbook.close()
+    return "\n".join(lines)
+
+
+def extract_pptx_text(path: Path) -> str:
+    try:
+        from pptx import Presentation
+    except ImportError:
+        return ""
+
+    presentation = Presentation(str(path))
+    lines = []
+    for slide_idx, slide in enumerate(presentation.slides, start=1):
+        texts = []
+        for shape in slide.shapes:
+            text = getattr(shape, "text", "") or ""
+            text = text.strip()
+            if text:
+                texts.append(text)
+        if texts:
+            lines.append(f"slide {slide_idx} | " + " | ".join(texts))
+    return "\n".join(lines)
+
+
 def chunk_code_by_lines(
     *,
     repo_id: str,
@@ -190,6 +328,7 @@ def chunk_code_by_lines(
         return []
 
     lang = _guess_lang(rel_path)
+    boundaries = detect_code_boundaries(lines, lang)
 
     chunks: List[CodeChunk] = []
     step = lines_per_chunk - overlap
@@ -197,7 +336,8 @@ def chunk_code_by_lines(
     idx = 0
 
     while start < len(lines):
-        end = min(start + lines_per_chunk, len(lines))
+        target_end = min(start + lines_per_chunk, len(lines))
+        end = choose_chunk_end(lines, start, target_end, boundaries)
         piece_lines = lines[start:end]
         piece = "\n".join(piece_lines).strip()
 
@@ -215,7 +355,85 @@ def chunk_code_by_lines(
                 )
             )
             idx += 1
+            if end >= len(lines):
+                break
 
-        start += step
+            next_start = max(start + step, end - overlap)
+            if next_start <= start:
+                next_start = end
+            start = next_start
+            continue
+
+        start += 1
 
     return chunks
+
+
+def detect_code_boundaries(lines: List[str], lang: str) -> set[int]:
+    boundaries = {0, len(lines)}
+
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped:
+            boundaries.add(idx)
+            continue
+
+        if looks_like_definition_boundary(stripped, lang):
+            boundaries.add(idx)
+
+    return boundaries
+
+
+def looks_like_definition_boundary(stripped: str, lang: str) -> bool:
+    if lang in {"python"}:
+        return bool(re.match(r"^(class|def|async def)\s+", stripped))
+
+    if lang in {"java", "javascript", "typescript", "go", "cs", "cpp", "c", "php", "kt"}:
+        if re.match(r"^(public|private|protected|internal|static|final|abstract|sealed|\@)", stripped):
+            return True
+        if re.match(r"^(class|interface|enum|record|object|data class|fun|func)\b", stripped):
+            return True
+        if re.match(r"^[A-Za-z0-9_<>\[\], ?]+\s+[A-Za-z_][A-Za-z0-9_]*\s*\(", stripped):
+            return True
+
+    if lang in {"yaml", "json", "xml", "sql", "markdown", "properties"}:
+        return bool(re.match(r"^([A-Za-z0-9_.\-]+:|<[^/!?][^>]*>|(select|insert|update|delete|create|alter)\b|#+\s)", stripped, re.IGNORECASE))
+
+    return False
+
+
+def choose_chunk_end(lines: List[str], start: int, target_end: int, boundaries: set[int], lookaround: int = 40) -> int:
+    if target_end >= len(lines):
+        return len(lines)
+
+    candidate_end = target_end
+    best_score = boundary_score(lines, candidate_end, boundaries)
+
+    lower = max(start + 1, target_end - lookaround)
+    upper = min(len(lines), target_end + lookaround)
+    for end in range(lower, upper + 1):
+        score = boundary_score(lines, end, boundaries)
+        distance_penalty = abs(end - target_end) * 0.03
+        final_score = score - distance_penalty
+        if final_score > best_score:
+            best_score = final_score
+            candidate_end = end
+
+    return max(start + 1, candidate_end)
+
+
+def boundary_score(lines: List[str], end: int, boundaries: set[int]) -> float:
+    score = 0.0
+    if end in boundaries:
+        score += 2.0
+
+    prev_line = lines[end - 1].strip() if 0 < end <= len(lines) else ""
+    next_line = lines[end].strip() if end < len(lines) else ""
+
+    if not prev_line or not next_line:
+        score += 1.0
+    if prev_line.endswith(("}", "];", ");", ")", ":")):
+        score += 0.4
+    if next_line.startswith(("class ", "def ", "async def ", "public ", "private ", "@", "function ")):
+        score += 0.8
+    return score
