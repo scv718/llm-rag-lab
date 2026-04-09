@@ -1,18 +1,16 @@
 import hashlib
 
 import streamlit as st
+from app.db import project_repo
 
 from app.db.doc_repo import (
     delete_project_doc,
     list_project_docs,
-    save_project_doc_blob,
 )
 from app.db.repo_repo import (
     delete_project_repo,
     list_project_repos,
-    save_project_repo_blob,
 )
-from app.db.project_repo import create_project, list_projects
 from app.db.target_repo import (
     add_project_target,
     get_project_target_settings,
@@ -32,7 +30,7 @@ def render_left_panel(set_project, _unused=None):
 
     st.markdown('<div class="panel"><div class="panel-title">작업목록</div>', unsafe_allow_html=True)
 
-    projects = list_projects()
+    projects = project_repo.list_projects()
 
     if not projects:
         st.caption("프로젝트가 없습니다.")
@@ -57,13 +55,24 @@ def render_left_panel(set_project, _unused=None):
     if st.button("프로젝트 생성", use_container_width=True):
         name = (new_name or "").strip()
         if name:
-            project_id = create_project(name)
+            project_id = project_repo.create_project(name)
             set_project(project_id)
             st.rerun()
 
     st.markdown("<hr style='margin: 10px 0; opacity:0.25;'>", unsafe_allow_html=True)
 
     project_id = st.session_state.get("selected_project_id")
+
+    if project_id:
+        action_col1, action_col2 = st.columns([2.2, 1.0])
+        with action_col1:
+            st.caption(f"선택된 프로젝트: `{project_id}`")
+        with action_col2:
+            if st.button("프로젝트 삭제", key=f"delete_project_{project_id}", use_container_width=True):
+                project_repo.delete_project(project_id)
+                uploaded_files_by_project.pop(project_id, None)
+                set_project(None)
+                st.rerun()
 
     with st.expander("📦 프로젝트 자산", expanded=False):
         if not project_id:
@@ -117,25 +126,6 @@ def render_left_panel(set_project, _unused=None):
                     },
                     project_id=project_id,
                 )
-
-                if response["kind"] == "doc":
-                    save_project_doc_blob(
-                        project_id=project_id,
-                        filename=file.name,
-                        raw=raw,
-                        mime=file.type,
-                        doc_id=response["doc_id"],
-                    )
-                    add_project_target(project_id, "doc", response["doc_id"], file.name)
-                else:
-                    save_project_repo_blob(
-                        project_id=project_id,
-                        filename=file.name,
-                        raw=raw,
-                        repo_id=response["repo_id"],
-                        extract_path=response["extract_path"],
-                    )
-                    add_project_target(project_id, "code", response["repo_id"], file.name)
 
                 project_hashes.add(file_sha)
                 uploaded_count += 1

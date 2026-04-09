@@ -21,3 +21,15 @@ def build_project_scope(project_id: int, active_only: bool, active_targets: list
     if len(clauses) == 1:
         return clauses[0], repo_extract_dirs
     return {"$or": clauses}, repo_extract_dirs
+
+
+def select_project_assets(active_only: bool, active_targets: list, docs: list, repos: list) -> tuple[list, list]:
+    if not active_only:
+        return docs, repos
+
+    allowed_doc_ids = {row["target_ref_id"] for row in active_targets if row["target_kind"] == "doc"}
+    allowed_repo_ids = {row["target_ref_id"] for row in active_targets if row["target_kind"] == "code"}
+
+    filtered_docs = [doc for doc in docs if doc["doc_id"] in allowed_doc_ids]
+    filtered_repos = [repo for repo in repos if repo["repo_id"] in allowed_repo_ids]
+    return filtered_docs, filtered_repos

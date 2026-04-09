@@ -1,4 +1,5 @@
 import os
+import json
 import requests
 from dataclasses import dataclass
 from typing import Any
@@ -32,12 +33,40 @@ class RagResult:
             if not isinstance(ar, list):
                 ar = []
 
-            return RagResult(ans, ev, ar)
+            debug_artifacts = []
+            for label, key in (
+                ("ranking_debug", "ranking_debug"),
+                ("target", "target"),
+                ("keywords", "keywords"),
+                ("symbol_hints", "symbol_hints"),
+            ):
+                value = payload.get(key)
+                if value in (None, [], {}, ""):
+                    continue
+                debug_artifacts.append(
+                    {
+                        "label": label,
+                        "content": json.dumps(value, ensure_ascii=False, indent=2),
+                    }
+                )
+
+            normalized_artifacts = []
+            for item in ar + debug_artifacts:
+                if isinstance(item, dict):
+                    normalized_artifacts.append(item)
+                else:
+                    normalized_artifacts.append({"label": "artifact", "content": str(item)})
+
+            return RagResult(ans, ev, normalized_artifacts)
 
         return RagResult(str(payload), [], [])
-
-
-def call_rag_api(question: str, top_k: int, project_id: int | None = None):
+def call_rag_api(
+    question: str,
+    top_k: int,
+    project_id: int | None = None,
+    llm_provider: str | None = None,
+    llm_model: str | None = None,
+):
 
     if not USE_REAL_API:
 
@@ -55,6 +84,10 @@ def call_rag_api(question: str, top_k: int, project_id: int | None = None):
     }
     if project_id is not None:
         payload["project_id"] = int(project_id)
+    if llm_provider:
+        payload["llm_provider"] = llm_provider
+    if llm_model:
+        payload["llm_model"] = llm_model
 
     r = requests.post(RAG_API_URL, json=payload, timeout=180)
     r.raise_for_status()

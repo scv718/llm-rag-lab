@@ -6,16 +6,19 @@ import PyPDF2
 from fastapi import HTTPException
 
 from app.core.config import DOCS_DIR, REPO_DIR, UPLOAD_DIR, vs
-from app.core.state import latest_target
+from app.db.doc_repo import save_project_doc_blob
+from app.db.repo_repo import save_project_repo_blob
+from app.db.target_repo import add_project_target
 from app.services.chunking import TextChunk, chunk_text_by_chars
 from app.services.embeddings import embed_documents
+from app.services.repo_intel import build_and_store_repo_intel_artifact
 from app.services.zip_ingest import (
     CodeChunk,
     chunk_code_by_lines,
     decode_text_best_effort,
+    extract_text_from_path,
     _guess_lang,
     iter_source_files,
-    read_text_best_effort,
     safe_extract_zip,
 )
 from app.utils.file_utils import detect_file_kind
@@ -82,6 +85,7 @@ def ingest_pdf(raw: bytes, filename: str, project_id: int | None = None) -> dict
     return finalize_doc_ingest(
         doc_id=doc_id,
         filename=filename,
+        raw=raw,
         source_type="pdf",
         project_id=project_id,
         chunks=all_chunks,
@@ -111,7 +115,9 @@ def ingest_zip(raw: bytes, filename: str, project_id: int | None = None) -> dict
     all_chunks: list[CodeChunk] = []
     for src in iter_source_files(extract_dir):
         rel_path = str(src.relative_to(extract_dir)).replace("\\", "/")
-        text = read_text_best_effort(src)
+        text = extract_text_from_path(src)
+        if not text.strip():
+            continue
         all_chunks.extend(
             chunk_code_by_lines(
                 repo_id=repo_id,
@@ -125,6 +131,7 @@ def ingest_zip(raw: bytes, filename: str, project_id: int | None = None) -> dict
     finalize_code_ingest(
         repo_id=repo_id,
         filename=filename,
+        raw=raw,
         source_type="zip",
         project_id=project_id,
         chunks=all_chunks,
@@ -162,6 +169,7 @@ def ingest_text_document(
     return finalize_doc_ingest(
         doc_id=doc_id,
         filename=filename,
+        raw=raw,
         source_type=source_type,
         project_id=project_id,
         chunks=chunks,
@@ -197,6 +205,7 @@ def ingest_csv(raw: bytes, filename: str, project_id: int | None = None) -> dict
     return finalize_doc_ingest(
         doc_id=doc_id,
         filename=filename,
+        raw=raw,
         source_type="csv",
         project_id=project_id,
         chunks=chunks,
@@ -235,6 +244,7 @@ def ingest_docx(raw: bytes, filename: str, project_id: int | None = None) -> dic
     return finalize_doc_ingest(
         doc_id=doc_id,
         filename=filename,
+        raw=raw,
         source_type="docx",
         project_id=project_id,
         chunks=chunks,
@@ -300,6 +310,7 @@ def ingest_xlsx(raw: bytes, filename: str, project_id: int | None = None) -> dic
     return finalize_doc_ingest(
         doc_id=doc_id,
         filename=filename,
+        raw=raw,
         source_type="xlsx",
         project_id=project_id,
         chunks=all_chunks,
@@ -333,6 +344,7 @@ def ingest_code_file(raw: bytes, filename: str, project_id: int | None = None) -
     finalize_code_ingest(
         repo_id=repo_id,
         filename=filename,
+        raw=raw,
         source_type=source_type,
         project_id=project_id,
         chunks=chunks,
@@ -357,6 +369,7 @@ def finalize_doc_ingest(
     *,
     doc_id: str,
     filename: str,
+    raw: bytes,
     source_type: str,
     project_id: int | None,
     chunks: list[TextChunk],
@@ -381,9 +394,14 @@ def finalize_doc_ingest(
         ]
         vs.upsert(ids=ids, embeddings=vectors, metadatas=metadatas, documents=chunk_texts)
 
-    latest_target["kind"] = "doc"
-    latest_target["id"] = doc_id
-    latest_target["filename"] = filename
+    if project_id is not None:
+        save_project_doc_blob(
+            project_id=project_id,
+            filename=filename,
+            raw=raw,
+            doc_id=doc_id,
+        )
+        add_project_target(project_id, "doc", doc_id, filename)
 
     response = {
         "status": "success",
@@ -405,6 +423,7 @@ def finalize_code_ingest(
     *,
     repo_id: str,
     filename: str,
+    raw: bytes,
     source_type: str,
     project_id: int | None,
     chunks: list[CodeChunk],
@@ -430,6 +449,20 @@ def finalize_code_ingest(
         ]
         vs.upsert(ids=ids, embeddings=vectors, metadatas=metadatas, documents=texts)
 
-    latest_target["kind"] = "code"
-    latest_target["id"] = repo_id
-    latest_target["filename"] = filename
+    if project_id is not None:
+        save_project_repo_blob(
+            project_id=project_id,
+            filename=filename,
+            raw=raw,
+            repo_id=repo_id,
+            extract_path=str(REPO_DIR / repo_id),
+        )
+        add_project_target(project_id, "code", repo_id, filename)
+
+    build_and_store_repo_intel_artifact(
+        {
+            "repo_id": repo_id,
+            "filename": filename,
+            "extract_path": str(REPO_DIR / repo_id),
+        }
+    )
